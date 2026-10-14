@@ -1,0 +1,498 @@
+--[[
+ .____                  ________ ___.    _____                           __                
+ |    |    __ _______   \_____  \\_ |___/ ____\_ __  ______ ____ _____ _/  |_  ___________ 
+ |    |   |  |  \__  \   /   |   \| __ \   __\  |  \/  ___// ___\\__  \\   __\/  _ \_  __ \
+ |    |___|  |  // __ \_/    |    \ \_\ \  | |  |  /\___ \\  \___ / __ \|  | (  <_> )  | \/
+ |_______ \____/(____  /\_______  /___  /__| |____//____  >\___  >____  /__|  \____/|__|   
+         \/          \/         \/    \/                \/     \/     \/                   
+          \_Welcome to LuaObfuscator.com   (Alpha 0.10.9) ~  Much Love, Ferib 
+
+]]--
+
+local Rayfield = loadstring(game:HttpGet("https://sirius.menu/gen2"))();
+local Window;
+local Players = game:GetService("Players");
+local Workspace = game:GetService("Workspace");
+local ROOT_FOLDER = "PlacedRoads";
+local COLOR = Color3.fromRGB(255, 0, 0);
+local LINE_THICKNESS = 0.03;
+local FILL_TRANSPARENCY = 0.6;
+local SCAN_INTERVAL = 3;
+local DEEP_SCAN_INTERVAL = 10;
+local CATEGORIES = {{Tab="DRONE",Icon="plane",Color=Color3.fromRGB(0, 255, 0),Names={"PlacedShahedLauncher","PlacedShahed-236Launcher","PlacedKarrarLauncher"}},{Tab="MISSILE",Icon="flame",Color=Color3.fromRGB(255, 255, 0),Names={"PlacedHypersonicBMLauncher","GLCM Tomahawk","PlacedMRBMLauncher"}},{Tab="SKIN PACK",Icon="palette",Color=Color3.fromRGB(0, 120, 255),Names={"B-Strike 1000 Launcher","Geran-5 Launcher","One Way Effector Rail","Rodeur 330 Rail","S-300 Launcher","S-400 Launcher","S-500Launcher","SAMP-T Launcher","Shahed-236 Launcher","B-STRIKE 2500 Launcher","B-STRIKE Hypersonic launcher"}},{Tab="VEHICLE",Icon="truck",Color=Color3.fromRGB(255, 140, 0),Scope="vehicle",Names={"Leopard 2A6","Himars","Smerch","Thundart","MARDER","Leopard 2A4"}},{Tab="AIR DEFENSE",Icon="shield",Color=Color3.fromRGB(255, 0, 0),Names={"PlacedCIWS","PlacedPatriotPac2","PlacedArrow3","PlacedPatriotPac3","PlacedIronDome"}}};
+local function norm(s)
+	return (string.lower(s):gsub("[^%w]", ""));
+end
+local active, tracked, wantedByNorm = {}, {}, {};
+local tabColor, nameToTab = {}, {};
+local scopeOf, vehicleNorm = {}, {};
+for _, cat in ipairs(CATEGORIES) do
+	tabColor[cat.Tab] = cat.Color or COLOR;
+	for _, n in ipairs(cat.Names) do
+		nameToTab[n] = cat.Tab;
+		if cat.Scope then
+			scopeOf[n] = cat.Scope;
+		end
+		if (cat.Scope == "vehicle") then
+			vehicleNorm[n] = norm(n);
+		end
+		wantedByNorm[norm(n)] = n;
+		active[n] = false;
+		tracked[n] = {};
+	end
+end
+local ALIASES = {["GLCM Tomahawk"]={"glcm","tomahawk"}};
+local function matchName(objName)
+	local n = norm(objName);
+	local exact = wantedByNorm[n];
+	if exact then
+		return exact;
+	end
+	for real, words in pairs(ALIASES) do
+		for _, w in ipairs(words) do
+			if string.find(n, w, 1, true) then
+				return real;
+			end
+		end
+	end
+	return nil;
+end
+local holder = Instance.new("Folder");
+holder.Name = "PlacedRoadHighlights";
+local ok = pcall(function()
+	holder.Parent = game:GetService("CoreGui");
+end);
+if (not ok or not holder.Parent) then
+	holder.Parent = Players.LocalPlayer:WaitForChild("PlayerGui");
+end
+local function anyActive()
+	for _, v in pairs(active) do
+		if v then
+			return true;
+		end
+	end
+	return false;
+end
+local function isValidTarget(obj)
+	return obj:IsA("Model") or obj:IsA("BasePart");
+end
+local scanVehicles;
+local VEHICLE_FOLDER_KEYWORDS;
+VEHICLE_FOLDER_KEYWORDS = {"vehicle","militarytruck"};
+local vehicleRoots, lastRootScan = {}, -1000000000;
+local function anyVehicleActive()
+	for n in pairs(vehicleNorm) do
+		if active[n] then
+			return true;
+		end
+	end
+	return false;
+end
+local function refreshVehicleRoots()
+	vehicleRoots = {};
+	for _, obj in ipairs(Workspace:GetDescendants()) do
+		if (obj:IsA("Folder") or obj:IsA("Model")) then
+			local ln = string.lower(obj.Name);
+			for _, kw in ipairs(VEHICLE_FOLDER_KEYWORDS) do
+				if string.find(ln, kw, 1, true) then
+					table.insert(vehicleRoots, obj);
+					break;
+				end
+			end
+		end
+	end
+end
+local function matchVehicle(objName)
+	local n = norm(objName);
+	for real, vn in pairs(vehicleNorm) do
+		if (active[real] and string.find(n, vn, 1, true)) then
+			return real;
+		end
+	end
+	return nil;
+end
+local function walkVehicle(container, depth, add)
+	for _, c in ipairs(container:GetChildren()) do
+		if c:IsA("Model") then
+			local real = matchVehicle(c.Name);
+			if real then
+				add(real, c);
+			elseif (depth < 3) then
+				walkVehicle(c, depth + 1, add);
+			end
+		elseif (c:IsA("Folder") and (depth < 4)) then
+			walkVehicle(c, depth + 1, add);
+		end
+	end
+end
+function scanVehicles(add)
+	if not anyVehicleActive() then
+		return;
+	end
+	if ((os.clock() - lastRootScan) >= DEEP_SCAN_INTERVAL) then
+		lastRootScan = os.clock();
+		refreshVehicleRoots();
+	end
+	for _, root in ipairs(vehicleRoots) do
+		if root.Parent then
+			walkVehicle(root, 0, add);
+		end
+	end
+end
+local lastDeep = 0;
+local function scanAll()
+	local found = {};
+	local function add(realName, obj)
+		found[realName] = found[realName] or {};
+		table.insert(found[realName], obj);
+	end
+	local root = Workspace:FindFirstChild(ROOT_FOLDER);
+	if root then
+		for _, child in ipairs(root:GetChildren()) do
+			local realName = matchName(child.Name);
+			if (realName and active[realName] and not scopeOf[realName] and isValidTarget(child)) then
+				add(realName, child);
+			end
+		end
+	end
+	local missing = false;
+	for n, on in pairs(active) do
+		if (on and not scopeOf[n] and not found[n]) then
+			missing = true;
+			break;
+		end
+	end
+	if (missing and ((os.clock() - lastDeep) >= DEEP_SCAN_INTERVAL)) then
+		lastDeep = os.clock();
+		for _, obj in ipairs(Workspace:GetDescendants()) do
+			local realName = matchName(obj.Name);
+			if (realName and active[realName] and not scopeOf[realName] and not found[realName] and isValidTarget(obj)) then
+				add(realName, obj);
+			end
+		end
+	end
+	scanVehicles(add);
+	return found;
+end
+local function getBounds(target)
+	if target:IsA("Model") then
+		local cf, size = target:GetBoundingBox();
+		return cf, size;
+	end
+	return target.CFrame, target.Size;
+end
+local function mark(name, target)
+	local box = tracked[name][target];
+	if (box and box.Parent) then
+		return;
+	end
+	local col = tabColor[nameToTab[name]] or COLOR;
+	box = Instance.new("SelectionBox");
+	box.Adornee = target;
+	box.Color3 = col;
+	box.SurfaceColor3 = col;
+	box.LineThickness = LINE_THICKNESS;
+	box.SurfaceTransparency = 1;
+	box.Parent = holder;
+	local fill = Instance.new("BoxHandleAdornment");
+	fill.Name = "Fill";
+	fill.Adornee = Workspace.Terrain;
+	local cf, size = getBounds(target);
+	fill.CFrame = cf;
+	fill.Size = size + Vector3.new(0.2, 0.2, 0.2);
+	fill.Color3 = col;
+	fill.Transparency = FILL_TRANSPARENCY;
+	fill.AlwaysOnTop = true;
+	fill.ZIndex = 5;
+	fill.Parent = box;
+	tracked[name][target] = box;
+end
+local function clear(name)
+	for target, box in pairs(tracked[name]) do
+		box:Destroy();
+		tracked[name][target] = nil;
+	end
+end
+local function update()
+	local found = scanAll();
+	local total = 0;
+	for name, on in pairs(active) do
+		if on then
+			local alive = {};
+			for _, m in ipairs(found[name] or {}) do
+				alive[m] = true;
+				mark(name, m);
+				total += 1
+			end
+			for target, box in pairs(tracked[name]) do
+				if (not alive[target] or not target:IsDescendantOf(Workspace)) then
+					box:Destroy();
+					tracked[name][target] = nil;
+				end
+			end
+		end
+	end
+	return total;
+end
+local function setActive(name, state)
+	active[name] = state;
+	if state then
+		local count = update();
+		local mine = 0;
+		for _ in pairs(tracked[name]) do
+			mine += 1
+		end
+		if Window then
+			Window:Notify({title=name,content=(((mine > 0) and ("Highlighted " .. mine .. " model(s)")) or "No model found (not placed yet or different name)")});
+		end
+	else
+		clear(name);
+	end
+end
+task.spawn(function()
+	while true do
+		task.wait(SCAN_INTERVAL);
+		if anyActive() then
+			update();
+		end
+	end
+end);
+local function recolorTab(tabName, color)
+	tabColor[tabName] = color;
+	for name, tab in pairs(nameToTab) do
+		if (tab == tabName) then
+			for _, box in pairs(tracked[name]) do
+				box.Color3 = color;
+				box.SurfaceColor3 = color;
+				local f = box:FindFirstChild("Fill");
+				if f then
+					f.Color3 = color;
+				end
+			end
+		end
+	end
+end
+local TELEPORT_ROOT = "MainMapArea";
+local CAPTURE_ZONES = {{"CaptureZone","Uranium Mine"},{"CaptureZone2","Airport"},{"CaptureZone3","City"},{"CaptureZone4","Oil Field"},{"CaptureZone5","Mining Site"},{"CaptureZone6","Industrial Zone"},{"CaptureZone7","Nuclear Power Plant"}};
+local function findZonePart(name)
+	local root = Workspace:FindFirstChild(TELEPORT_ROOT);
+	if not root then
+		return nil;
+	end
+	local want = norm(name);
+	for _, c in ipairs(root:GetChildren()) do
+		if (c:IsA("BasePart") and (norm(c.Name) == want)) then
+			return c;
+		end
+	end
+	for _, d in ipairs(root:GetDescendants()) do
+		if (d:IsA("BasePart") and (norm(d.Name) == want)) then
+			return d;
+		end
+	end
+	return nil;
+end
+local function teleportTo(name, label)
+	local part = findZonePart(name);
+	if not part then
+		Window:Notify({title="Teleport",content=(label .. " (" .. name .. ") not found in " .. TELEPORT_ROOT)});
+		return;
+	end
+	local char = Players.LocalPlayer.Character;
+	local root = char and char:FindFirstChild("HumanoidRootPart");
+	if not root then
+		return;
+	end
+	root.CFrame = part.CFrame + Vector3.new(0, (part.Size.Y / 2) + 4, 0);
+	Window:Notify({title="Teleport",content=("Teleported to " .. label)});
+end
+local UserInputService = game:GetService("UserInputService");
+local GuiService = game:GetService("GuiService");
+local VirtualInputManager = game:GetService("VirtualInputManager");
+local DOT_SIZE = 22;
+local DOT_IGNORE_RADIUS = 45;
+local DOT_COLOR = Color3.fromRGB(255, 60, 60);
+local DOT_LOCKED_COLOR = Color3.fromRGB(60, 255, 90);
+local attack = {pos=nil,gui=nil,dot=nil,placing=false,locked=false,spamming=false,cps=20,token=0,lastSent=nil};
+local function notify(text)
+	if Window then
+		Window:Notify({title="Attack",content=text});
+	end
+end
+local function ensureDot()
+	if (attack.gui and attack.gui.Parent) then
+		return;
+	end
+	local gui = Instance.new("ScreenGui");
+	gui.Name = "AttackDot";
+	gui.ResetOnSpawn = false;
+	gui.IgnoreGuiInset = true;
+	gui.DisplayOrder = 999;
+	gui.Parent = holder.Parent or Players.LocalPlayer:WaitForChild("PlayerGui");
+	local dot = Instance.new("Frame");
+	dot.AnchorPoint = Vector2.new(0.5, 0.5);
+	dot.Size = UDim2.fromOffset(DOT_SIZE, DOT_SIZE);
+	dot.BackgroundColor3 = DOT_COLOR;
+	dot.BorderSizePixel = 0;
+	dot.Active = false;
+	local corner = Instance.new("UICorner");
+	corner.CornerRadius = UDim.new(1, 0);
+	corner.Parent = dot;
+	local stroke = Instance.new("UIStroke");
+	stroke.Color = Color3.new(1, 1, 1);
+	stroke.Thickness = 2;
+	stroke.Parent = dot;
+	dot.Parent = gui;
+	attack.gui, attack.dot = gui, dot;
+end
+local function placeDot(pos)
+	ensureDot();
+	attack.pos = pos;
+	attack.dot.Position = UDim2.fromOffset(pos.X, pos.Y);
+	attack.dot.BackgroundColor3 = (attack.locked and DOT_LOCKED_COLOR) or DOT_COLOR;
+end
+local INPUT_MODE = "touch";
+local SPAM_TOUCH_ID = 25;
+local function sendClick(pos)
+	attack.lastSent = {pos=pos,t=os.clock()};
+	if (INPUT_MODE == "mouse") then
+		pcall(function()
+			VirtualInputManager:SendMouseMoveEvent(pos.X, pos.Y, game);
+			VirtualInputManager:SendMouseButtonEvent(pos.X, pos.Y, 0, true, game, 0);
+			VirtualInputManager:SendMouseButtonEvent(pos.X, pos.Y, 0, false, game, 0);
+		end);
+	else
+		pcall(function()
+			VirtualInputManager:SendTouchEvent(SPAM_TOUCH_ID, 0, pos.X, pos.Y);
+			VirtualInputManager:SendTouchEvent(SPAM_TOUCH_ID, 2, pos.X, pos.Y);
+		end);
+	end
+end
+local function startSpam()
+	attack.token += 1
+	local my = attack.token;
+	task.spawn(function()
+		while attack.spamming and (attack.token == my) do
+			if attack.pos then
+				sendClick(attack.pos);
+			end
+			task.wait(1 / math.max(attack.cps, 1));
+		end
+	end);
+end
+UserInputService.InputBegan:Connect(function(input, gp)
+	if (gp or not attack.placing or attack.locked) then
+		return;
+	end
+	local t = input.UserInputType;
+	if ((t ~= Enum.UserInputType.MouseButton1) and (t ~= Enum.UserInputType.Touch)) then
+		return;
+	end
+	local pos = Vector2.new(input.Position.X, input.Position.Y) + GuiService:GetGuiInset();
+	local ls = attack.lastSent;
+	if (ls and ((os.clock() - ls.t) < 0.3) and ((pos - ls.pos).Magnitude < DOT_IGNORE_RADIUS)) then
+		return;
+	end
+	placeDot(pos);
+	attack.placing = false;
+	notify("Dot placed");
+end);
+local function onPlaceDot()
+	if attack.locked then
+		notify("Dot is locked - unlock it first");
+		return;
+	end
+	attack.placing = true;
+	notify("Tap anywhere on the screen to place the dot");
+end
+local function onToggleSpam()
+	if not attack.pos then
+		notify("Place a dot first");
+		return;
+	end
+	attack.spamming = not attack.spamming;
+	if attack.spamming then
+		startSpam();
+	else
+		attack.token += 1
+	end
+	notify((attack.spamming and "Spam ON") or "Spam OFF");
+end
+local function onToggleLock()
+	if not attack.pos then
+		notify("Place a dot first");
+		return;
+	end
+	attack.locked = not attack.locked;
+	attack.placing = false;
+	attack.dot.BackgroundColor3 = (attack.locked and DOT_LOCKED_COLOR) or DOT_COLOR;
+	notify((attack.locked and "Dot LOCKED") or "Dot UNLOCKED");
+end
+Window = Rayfield:CreateWindow({name="Placed Highlight",subtitle="Rayfield Gen2",sidebarLayout=true});
+for _, cat in ipairs(CATEGORIES) do
+	local tab = Window:CreateTab({name=cat.Tab,icon=cat.Icon});
+	tab:CreateColorPicker({name=(cat.Tab .. " Color"),color=(cat.Color or COLOR),callback=function(color)
+		recolorTab(cat.Tab, color);
+	end});
+	tab:CreateToggle({name=("ALL " .. cat.Tab),flag=("ALL_" .. cat.Tab),callback=function(v)
+		for _, n in ipairs(cat.Names) do
+			active[n] = v;
+			if not v then
+				clear(n);
+			end
+		end
+		if v then
+			update();
+		end
+	end});
+	for _, n in ipairs(cat.Names) do
+		tab:CreateToggle({name=n,flag=("TG_" .. n),callback=function(v)
+			setActive(n, v);
+		end});
+	end
+end
+local teleportTab = Window:CreateTab({name="TELEPORT",icon="map-pin"});
+for _, zone in ipairs(CAPTURE_ZONES) do
+	teleportTab:CreateButton({name=zone[2],callback=function()
+		teleportTo(zone[1], zone[2]);
+	end});
+end
+local attackTab = Window:CreateTab({name="ATTACK",icon="crosshair"});
+attackTab:CreateButton({name="Place dot / Move dot",callback=onPlaceDot});
+attackTab:CreateButton({name="Start spam / Stop spam",callback=onToggleSpam});
+attackTab:CreateButton({name="Lock / Unlock dot",callback=onToggleLock});
+attackTab:CreateSlider({name="Spam speed",range={1,50},increment=1,value=attack.cps,suffix=" clicks/s",callback=function(v)
+	attack.cps = v;
+end});
+local debugTab = Window:CreateTab({name="DEBUG",icon="bug"});
+debugTab:CreateButton({name="Print PlacedRoads children (F9 console)",callback=function()
+	local root = Workspace:FindFirstChild(ROOT_FOLDER);
+	if not root then
+		warn("[DEBUG] Workspace." .. ROOT_FOLDER .. " NOT FOUND");
+		Window:Notify({title="Debug",content=(ROOT_FOLDER .. " not found in Workspace")});
+		return;
+	end
+	for _, c in ipairs(root:GetChildren()) do
+		print("[DEBUG]", c.Name, "(" .. c.ClassName .. ")");
+	end
+	Window:Notify({title="Debug",content=(#root:GetChildren() .. " children printed to console")});
+end});
+debugTab:CreateButton({name="Print vehicle folders + children (F9)",callback=function()
+	local count = 0;
+	for _, obj in ipairs(Workspace:GetDescendants()) do
+		if (obj:IsA("Folder") or obj:IsA("Model")) then
+			local ln = string.lower(obj.Name);
+			for _, kw in ipairs(VEHICLE_FOLDER_KEYWORDS) do
+				if string.find(ln, kw, 1, true) then
+					count += 1
+					print("[DEBUG] ROOT:", obj:GetFullName());
+					for _, c in ipairs(obj:GetChildren()) do
+						print("   ", c.Name, "(" .. c.ClassName .. ")");
+					end
+					break;
+				end
+			end
+		end
+	end
+	Window:Notify({title="Debug",content=(count .. " vehicle folder(s) printed to console")});
+end});
